@@ -1,0 +1,23 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Runtime data
+focusmeter.db
+config.json

@@ -1,0 +1,6 @@
+pynput
+psutil
+pygetwindow
+plyer
+PyQt5
+pywin32
