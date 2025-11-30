@@ -1,9 +1,12 @@
 # main_gui.py
 
+from __future__ import annotations
+
 import sys
-from datetime import datetime, time as dt_time
+from datetime import datetime
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPalette, QColor
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -18,25 +21,255 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QMessageBox,
     QCheckBox,
+    QComboBox,
+    QStyleFactory,
 )
 
 from config import load_config, save_config, Config
 from focus_worker import FocusWorker
-from storage.db import get_time_stats
+from stats_window import StatsWindow
+
+
+# --------- QSS стили для светлой и тёмной тем ---------
+
+LIGHT_STYLE_SHEET = """
+QWidget {
+    font-family: "Segoe UI", "Roboto", "Arial";
+    font-size: 10pt;
+}
+
+/* Главное окно */
+QMainWindow {
+    background-color: #f5f5f7;
+}
+
+/* Группы */
+QGroupBox {
+    border: 1px solid #d0d0d0;
+    border-radius: 8px;
+    margin-top: 16px;
+    padding-top: 12px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 6px;
+    background-color: transparent;
+    font-weight: 600;
+}
+
+/* Кнопки */
+QPushButton {
+    border-radius: 6px;
+    padding: 6px 12px;
+    border: 1px solid #c0c0c0;
+    background-color: #ffffff;
+}
+QPushButton:hover {
+    background-color: #e8f0ff;
+    border-color: #5b8def;
+}
+QPushButton:pressed {
+    background-color: #d0e0ff;
+}
+QPushButton:disabled {
+    background-color: #eeeeee;
+    color: #999999;
+    border-color: #dddddd;
+}
+
+/* Поля ввода, спинбоксы, комбобоксы, текстовые поля */
+QLineEdit,
+QPlainTextEdit,
+QTextEdit,
+QSpinBox,
+QComboBox {
+    border-radius: 4px;
+    padding: 4px;
+    border: 1px solid #c8c8c8;
+    background-color: #ffffff;
+}
+QLineEdit:focus,
+QPlainTextEdit:focus,
+QTextEdit:focus,
+QSpinBox:focus,
+QComboBox:focus {
+    border-color: #5b8def;
+    outline: none;
+}
+
+/* Чекбоксы */
+QCheckBox {
+    spacing: 6px;
+}
+
+/* Скроллбары */
+QScrollBar:vertical {
+    width: 10px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background-color: #c0c0c0;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #a0a0a0;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+"""
+
+DARK_STYLE_SHEET = """
+QWidget {
+    font-family: "Segoe UI", "Roboto", "Arial";
+    font-size: 10pt;
+}
+
+/* Главное окно */
+QMainWindow {
+    background-color: #353535;
+}
+
+/* Группы */
+QGroupBox {
+    border: 1px solid #555555;
+    border-radius: 8px;
+    margin-top: 16px;
+    padding-top: 12px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 6px;
+    background-color: transparent;
+    font-weight: 600;
+}
+
+/* Кнопки */
+QPushButton {
+    border-radius: 6px;
+    padding: 6px 12px;
+    border: 1px solid #555555;
+    background-color: #444444;
+    color: #ffffff;
+}
+QPushButton:hover {
+    background-color: #505a6b;
+    border-color: #7aa2ff;
+}
+QPushButton:pressed {
+    background-color: #3c4454;
+}
+QPushButton:disabled {
+    background-color: #3a3a3a;
+    color: #777777;
+    border-color: #444444;
+}
+
+/* Поля ввода, спинбоксы, комбобоксы, текстовые поля */
+QLineEdit,
+QPlainTextEdit,
+QTextEdit,
+QSpinBox,
+QComboBox {
+    border-radius: 4px;
+    padding: 4px;
+    border: 1px solid #555555;
+    background-color: #3b3b3b;
+    color: #ffffff;
+}
+QLineEdit:focus,
+QPlainTextEdit:focus,
+QTextEdit:focus,
+QSpinBox:focus,
+QComboBox:focus {
+    border-color: #7aa2ff;
+    outline: none;
+}
+
+/* Чекбоксы */
+QCheckBox {
+    spacing: 6px;
+}
+
+/* Скроллбары */
+QScrollBar:vertical {
+    width: 10px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background-color: #555555;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #777777;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+"""
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("FocusMeter v2 — трекинг фокуса")
-        self.resize(900, 700)
+        self.setWindowTitle("FocusMeter")
+        self.resize(1100, 850)
 
         self.config: Config = load_config()
         self.worker: FocusWorker | None = None
+        self.stats_window: StatsWindow | None = None
 
+        self._init_presets()
         self._init_ui()
         self._load_config_to_ui()
+
+    # ---------- пресеты работы/отдыха ----------
+
+    def _init_presets(self):
+        self.preset_descriptions: dict[int, str] = {
+            0: (
+                "Пользовательский режим. Настройте интервалы работы и отдыха вручную ниже. "
+                "Параметры сохраняются в config.json."
+            ),
+            1: (
+                "Помодоро 25/5: 25 минут сфокусированной работы, затем 5 минут короткого перерыва. "
+                "Напоминание о перерыве ориентируется на ~25 минут реальной работы в рабочих приложениях."
+            ),
+            2: (
+                "Методика 52/17: 52 минуты глубокой работы, затем 17 минут отдыха. "
+                "Подходит для задач, требующих высокой концентрации."
+            ),
+            3: (
+                "Профиль 50/10: 50 минут работы, затем 10 минут перерыва. "
+                "Универсальный вариант для учебной и офисной деятельности."
+            ),
+        }
+
+        self.preset_configs: dict[int, dict] = {
+            1: {
+                "poll_interval_seconds": 1,
+                "idle_threshold_seconds": 10,
+                "idle_warning_minutes": 10,
+                "break_warning_minutes": 25,
+            },
+            2: {
+                "poll_interval_seconds": 1,
+                "idle_threshold_seconds": 10,
+                "idle_warning_minutes": 10,
+                "break_warning_minutes": 52,
+            },
+            3: {
+                "poll_interval_seconds": 1,
+                "idle_threshold_seconds": 10,
+                "idle_warning_minutes": 10,
+                "break_warning_minutes": 50,
+            },
+        }
 
     # ---------- UI ----------
 
@@ -44,6 +277,24 @@ class MainWindow(QMainWindow):
         # Статус
         self.status_label = QLabel("Трекер остановлен.")
         self.status_label.setAlignment(Qt.AlignLeft)
+
+        # Тема интерфейса (выше пресета)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("Тёмная (Fusion)", "dark")
+        self.theme_combo.addItem("Светлая (Fusion)", "light")
+        self.theme_combo.addItem("Системная", "system")
+        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
+
+        # Пресеты работы/отдыха
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("Пользовательский")
+        self.preset_combo.addItem("Помодоро 25/5")
+        self.preset_combo.addItem("52/17")
+        self.preset_combo.addItem("50/10")
+        self.preset_combo.currentIndexChanged.connect(self.on_preset_changed)
+
+        self.preset_desc_label = QLabel()
+        self.preset_desc_label.setWordWrap(True)
 
         # Настройки числовые
         self.poll_interval_spin = QSpinBox()
@@ -53,32 +304,38 @@ class MainWindow(QMainWindow):
         self.idle_threshold_spin.setRange(5, 600)
 
         self.idle_warning_spin = QSpinBox()
-        self.idle_warning_spin.setRange(0, 240)   # можно 0 минут
+        self.idle_warning_spin.setRange(0, 240)
 
         self.break_warning_spin = QSpinBox()
-        self.break_warning_spin.setRange(1, 480)  # минимум 1 минута
+        self.break_warning_spin.setRange(1, 480)
 
-        self.notify_idle_check = QCheckBox("Уведомлять о бездействии")
+        self.notify_idle_check = QCheckBox("Уведомлять о бездействии/отвлечении")
         self.notify_break_check = QCheckBox("Уведомлять о необходимости перерыва")
 
         # Списки приложений
         self.work_apps_edit = QPlainTextEdit()
-        self.work_apps_edit.setPlaceholderText("Одно имя процесса на строку (например, pycharm64.exe)")
+        self.work_apps_edit.setPlaceholderText(
+            "Одно имя процесса на строку (например, pycharm64.exe)"
+        )
+        self.work_apps_edit.setMinimumHeight(80)
 
         self.distract_apps_edit = QPlainTextEdit()
-        self.distract_apps_edit.setPlaceholderText("Одно имя процесса на строку (например, chrome.exe)")
+        self.distract_apps_edit.setPlaceholderText(
+            "Одно имя процесса на строку (например, chrome.exe)"
+        )
+        self.distract_apps_edit.setMinimumHeight(80)
 
         # Лог
         self.log_edit = QPlainTextEdit()
         self.log_edit.setReadOnly(True)
+        self.log_edit.setObjectName("log_edit")
+        self.log_edit.setMinimumHeight(250)
 
-        # Статистика
-        self.stats_view = QPlainTextEdit()
-        self.stats_view.setReadOnly(True)
-        self.stats_refresh_button = QPushButton("Обновить статистику за сегодня")
-        self.stats_refresh_button.clicked.connect(self.on_refresh_stats_today)
+        # Кнопка подробной статистики
+        self.stats_details_button = QPushButton("Открыть подробную статистику…")
+        self.stats_details_button.clicked.connect(self.on_open_detailed_stats)
 
-        # Кнопки
+        # Кнопки управления
         self.save_button = QPushButton("Сохранить настройки")
         self.start_button = QPushButton("Запустить трекинг")
         self.stop_button = QPushButton("Остановить")
@@ -91,6 +348,8 @@ class MainWindow(QMainWindow):
         # Группа "Настройки"
         settings_group = QGroupBox("Настройки")
         form = QFormLayout()
+        form.addRow("Тема интерфейса:", self.theme_combo)
+        form.addRow("Профиль (пресет):", self.preset_combo)
         form.addRow("Интервал опроса (сек):", self.poll_interval_spin)
         form.addRow("Порог бездействия (сек):", self.idle_threshold_spin)
         form.addRow("Напоминать о бездействии (мин):", self.idle_warning_spin)
@@ -99,13 +358,17 @@ class MainWindow(QMainWindow):
         form.addRow(self.notify_break_check)
         form.addRow("Рабочие приложения:", self.work_apps_edit)
         form.addRow("Отвлекающие приложения:", self.distract_apps_edit)
-        settings_group.setLayout(form)
+
+        settings_layout = QVBoxLayout()
+        settings_layout.addLayout(form)
+        # Описание пресета отдельным блоком на всю ширину
+        settings_layout.addWidget(self.preset_desc_label)
+        settings_group.setLayout(settings_layout)
 
         # Группа "Статистика"
-        stats_group = QGroupBox("Статистика (сегодня)")
+        stats_group = QGroupBox("Статистика")
         stats_layout = QVBoxLayout()
-        stats_layout.addWidget(self.stats_refresh_button)
-        stats_layout.addWidget(self.stats_view)
+        stats_layout.addWidget(self.stats_details_button)
         stats_group.setLayout(stats_layout)
 
         # Группа "Лог"
@@ -121,13 +384,17 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.start_button)
         btn_layout.addWidget(self.stop_button)
 
+        # Нижний блок: статистика слева, лог справа (лог шире)
+        bottom_layout = QHBoxLayout()
+        bottom_layout.addWidget(stats_group, 1)
+        bottom_layout.addWidget(log_group, 3)
+
         # Общий layout
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.status_label)
         main_layout.addWidget(settings_group)
         main_layout.addLayout(btn_layout)
-        main_layout.addWidget(stats_group)
-        main_layout.addWidget(log_group)
+        main_layout.addLayout(bottom_layout, 2)
 
         central = QWidget()
         central.setLayout(main_layout)
@@ -135,8 +402,36 @@ class MainWindow(QMainWindow):
 
     # ---------- работа с конфигом ----------
 
+    def _detect_preset_index(self, cfg: Config) -> int:
+        """Пытаемся сопоставить текущие настройки одному из пресетов."""
+        for idx, preset in self.preset_configs.items():
+            if (
+                cfg.poll_interval_seconds == preset["poll_interval_seconds"]
+                and cfg.idle_threshold_seconds == preset["idle_threshold_seconds"]
+                and cfg.idle_warning_minutes == preset["idle_warning_minutes"]
+                and cfg.break_warning_minutes == preset["break_warning_minutes"]
+            ):
+                return idx
+        return 0  # пользовательский
+
     def _load_config_to_ui(self):
         cfg = self.config
+
+        # 1) Определяем пресет по текущим настройкам
+        preset_index = self._detect_preset_index(cfg)
+
+        # Если настройки не совпадают ни с одним пресетом –
+        # принудительно применяем Помодоро 25/5 как новый стандарт.
+        if preset_index == 0:
+            pomodoro = self.preset_configs[1]
+            cfg.poll_interval_seconds = pomodoro["poll_interval_seconds"]
+            cfg.idle_threshold_seconds = pomodoro["idle_threshold_seconds"]
+            cfg.idle_warning_minutes = pomodoro["idle_warning_minutes"]
+            cfg.break_warning_minutes = pomodoro["break_warning_minutes"]
+            save_config(cfg)
+            preset_index = 1
+
+        # теперь заполняем поля из cfg
         self.poll_interval_spin.setValue(cfg.poll_interval_seconds)
         self.idle_threshold_spin.setValue(cfg.idle_threshold_seconds)
         self.idle_warning_spin.setValue(cfg.idle_warning_minutes)
@@ -145,6 +440,23 @@ class MainWindow(QMainWindow):
         self.notify_break_check.setChecked(cfg.notify_on_break)
         self.work_apps_edit.setPlainText("\n".join(cfg.work_apps))
         self.distract_apps_edit.setPlainText("\n".join(cfg.distracting_apps))
+
+        # выставляем пресет в комбобоксе
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.setCurrentIndex(preset_index)
+        self.preset_combo.blockSignals(False)
+        self._update_preset_description(preset_index)
+
+        # тема
+        theme_key = getattr(cfg, "theme", "dark")
+        idx = self.theme_combo.findData(theme_key)
+        if idx == -1:
+            idx = 0
+            theme_key = self.theme_combo.itemData(0)
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.setCurrentIndex(idx)
+        self.theme_combo.blockSignals(False)
+        self.apply_theme(theme_key)
 
     @staticmethod
     def _text_to_list(text: str) -> list[str]:
@@ -167,6 +479,78 @@ class MainWindow(QMainWindow):
         cfg.distracting_apps = self._text_to_list(self.distract_apps_edit.toPlainText())
         save_config(cfg)
 
+    # ---------- пресеты: обработка выбора ----------
+
+    def _update_preset_description(self, index: int):
+        desc = self.preset_descriptions.get(index, "")
+        self.preset_desc_label.setText(desc)
+
+    def on_preset_changed(self, index: int):
+        self._update_preset_description(index)
+
+        if index == 0:
+            # пользовательский режим – значения оставляем как есть
+            return
+
+        cfg = self.preset_configs.get(index)
+        if not cfg:
+            return
+
+        self.poll_interval_spin.setValue(cfg["poll_interval_seconds"])
+        self.idle_threshold_spin.setValue(cfg["idle_threshold_seconds"])
+        self.idle_warning_spin.setValue(cfg["idle_warning_minutes"])
+        self.break_warning_spin.setValue(cfg["break_warning_minutes"])
+
+    # ---------- темы: обработка выбора ----------
+
+    def apply_theme(self, theme_key: str):
+        """Применить выбранную тему ко всему приложению."""
+        app = QApplication.instance()
+        if app is None:
+            return
+
+        theme_key = theme_key or "dark"
+        app.setStyleSheet("")
+
+        if theme_key == "system":
+            app.setStyle(app.style().objectName())
+            app.setPalette(app.style().standardPalette())
+        elif theme_key == "light":
+            app.setStyle(QStyleFactory.create("Fusion"))
+            palette = app.style().standardPalette()
+            app.setPalette(palette)
+            app.setStyleSheet(LIGHT_STYLE_SHEET)
+        elif theme_key == "dark":
+            app.setStyle(QStyleFactory.create("Fusion"))
+            dark_palette = QPalette()
+            dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.WindowText, Qt.white)
+            dark_palette.setColor(QPalette.Base, QColor(35, 35, 35))
+            dark_palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.ToolTipBase, Qt.white)
+            dark_palette.setColor(QPalette.ToolTipText, Qt.white)
+            dark_palette.setColor(QPalette.Text, Qt.white)
+            dark_palette.setColor(QPalette.Button, QColor(53, 53, 53))
+            dark_palette.setColor(QPalette.ButtonText, Qt.white)
+            dark_palette.setColor(QPalette.BrightText, Qt.red)
+            dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            dark_palette.setColor(QPalette.HighlightedText, Qt.black)
+            app.setPalette(dark_palette)
+            app.setStyleSheet(DARK_STYLE_SHEET)
+        else:
+            app.setStyle(QStyleFactory.create("Fusion"))
+            app.setPalette(app.style().standardPalette())
+            app.setStyleSheet(DARK_STYLE_SHEET)
+
+    def on_theme_changed(self, index: int):
+        key = self.theme_combo.itemData(index)
+        if not key:
+            return
+        self.apply_theme(key)
+        self.config.theme = key
+        save_config(self.config)
+        self.append_log(f"Тема интерфейса изменена: {key}")
+
     # ---------- кнопки ----------
 
     def on_save_clicked(self):
@@ -179,7 +563,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Уже запущен", "Трекер уже работает.")
             return
 
-        # Перед запуском ещё раз сохранить текущие значения в конфиг
         self._save_ui_to_config()
 
         self.append_log("Запуск трекинга...")
@@ -211,93 +594,21 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Трекер остановлен.")
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.show_today_stats()
 
-    # ---------- статистика ----------
+    # ---------- подробная статистика ----------
 
-    @staticmethod
-    def _format_duration(seconds: float) -> str:
-        seconds = int(seconds)
-        h = seconds // 3600
-        m = (seconds % 3600) // 60
-        s = seconds % 60
-        return f"{h:02d}:{m:02d}:{s:02d}"
+    def on_open_detailed_stats(self):
+        self.show_today_stats()
 
-    def on_refresh_stats_today(self):
-        try:
-            text = self._get_today_stats_text()
-            self.stats_view.setPlainText(text)
-            self.append_log("Статистика за сегодня обновлена.")
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось обновить статистику: {e}")
-
-    def _get_today_stats_text(self) -> str:
-        """
-        Статистика за текущий день по локальному времени.
-        В БД время хранится в UTC, поэтому переводим границы дня в UTC.
-        """
-        # локальное сейчас
-        now_local = datetime.now()
-        # границы дня в локальном
-        start_local = datetime.combine(now_local.date(), dt_time.min)
-        end_local = datetime.combine(now_local.date(), dt_time.max)
-
-        # оценка смещения локального времени относительно UTC
-        offset = datetime.now() - datetime.utcnow()
-
-        # переводим границы дня в "UTC-наивное"
-        start_utc = start_local - offset
-        end_utc = end_local - offset
-
-        stats = get_time_stats(
-            db_path=self.config.db_path,
-            start_utc=start_utc,
-            end_utc=end_utc,
-            sample_interval_seconds=self.config.poll_interval_seconds,
-        )
-
-        if stats.total_seconds == 0:
-            return "За сегодня пока нет данных."
-
-        lines: list[str] = []
-
-        lines.append(
-            f"Период (UTC): {stats.period_start.isoformat()} — {stats.period_end.isoformat()}"
-        )
-        lines.append("")
-        lines.append(f"Всего времени под наблюдением: {self._format_duration(stats.total_seconds)}")
-        lines.append(f"Активное время (есть ввод):     {self._format_duration(stats.active_seconds)}")
-        lines.append(
-            f"Активное время в рабочих приложениях:     {self._format_duration(stats.work_active_seconds)}"
-        )
-        lines.append(
-            f"Активное время в отвлекающих приложениях: {self._format_duration(stats.distract_active_seconds)}"
-        )
-        lines.append(
-            f"Активное время в прочих приложениях:      {self._format_duration(stats.other_active_seconds)}"
-        )
-        lines.append(f"Время бездействия:                        {self._format_duration(stats.idle_seconds)}")
-        lines.append("")
-
-        # Доли
-        if stats.total_seconds > 0:
-            def pct(x: float) -> str:
-                return f"{(x / stats.total_seconds * 100):5.1f}%"
-
-            lines.append("Доля от общего времени:")
-            lines.append(f"- Активное:            {pct(stats.active_seconds)}")
-            lines.append(f"- Рабочее активное:    {pct(stats.work_active_seconds)}")
-            lines.append(f"- Отвлекающее активное:{pct(stats.distract_active_seconds)}")
-            lines.append(f"- Бездействие:         {pct(stats.idle_seconds)}")
-            lines.append("")
-
-        # Топ приложений
-        lines.append("Топ приложений по активному времени:")
-        for i, app in enumerate(stats.by_app[:5], start=1):
-            app_name = app["app_name"] or "<без имени>"
-            dur = self._format_duration(app["active_seconds"])
-            lines.append(f"{i}. {app_name} — {dur}")
-
-        return "\n".join(lines)
+    def show_today_stats(self):
+        if self.stats_window is None:
+            self.stats_window = StatsWindow(self.config, self)
+        else:
+            self.stats_window.refresh_for_today()
+        self.stats_window.show()
+        self.stats_window.raise_()
+        self.stats_window.activateWindow()
 
     # ---------- вспомогательное ----------
 
@@ -306,7 +617,6 @@ class MainWindow(QMainWindow):
         self.log_edit.appendPlainText(f"[{ts}] {text}")
 
     def closeEvent(self, event):
-        # аккуратно останавливаем трекер при закрытии окна
         if self.worker and self.worker.isRunning():
             reply = QMessageBox.question(
                 self,

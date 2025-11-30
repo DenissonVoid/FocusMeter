@@ -1,89 +1,68 @@
 # config.py
 
-import json
+from __future__ import annotations
+
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
+import json
 
+# путь к файлу конфигурации
+CONFIG_PATH = Path("config.json")
 
-CONFIG_FILENAME = "config.json"
+# по умолчанию база лежит рядом с программой
+DB_PATH_DEFAULT = Path(__file__).with_name("focusmeter.db")
 
 
 @dataclass
 class Config:
-    # раз в сколько секунд опрашивать активное окно и писать статистику
+    # базовые интервалы (по умолчанию — Помодоро 25/5)
     poll_interval_seconds: int = 1
-
-    # сколько секунд можно не трогать мышь/клавиатуру, но считаться, что пользователь еще "активен"
-    idle_threshold_seconds: int = 60
-
-    # через сколько минут бездействия напоминать, что пользователь неактивен
+    idle_threshold_seconds: int = 10
     idle_warning_minutes: int = 10
+    break_warning_minutes: int = 25
 
-    # через сколько минут непрерывной работы напоминать, что пора отдохнуть
-    break_warning_minutes: int = 50
-
-    # списки имен процессов (exe / bin), которые считаются рабочими и отвлекающими
-    work_apps: list[str] = field(default_factory=list)
-    distracting_apps: list[str] = field(default_factory=list)
-
-    # включать ли уведомления
+    # уведомления
     notify_on_idle: bool = True
     notify_on_break: bool = True
 
-    # путь к базе данных
-    db_path: str = "focusmeter.db"
+    # списки приложений
+    work_apps: list[str] = field(default_factory=list)
+    distracting_apps: list[str] = field(default_factory=list)
 
-    def __post_init__(self):
-        # нормализуем имена приложений к нижнему регистру
-        self.work_apps = [a.lower() for a in self.work_apps]
-        self.distracting_apps = [a.lower() for a in self.distracting_apps]
+    # путь к БД
+    db_path: str = str(DB_PATH_DEFAULT)
 
-
-def get_config_path() -> Path:
-    # config.json лежит рядом с этим файлом
-    return Path(__file__).resolve().parent / CONFIG_FILENAME
+    # тема интерфейса:
+    # "system" — системная
+    # "light"  — светлая Fusion
+    # "dark"   — тёмная Fusion
+    theme: str = "dark"
 
 
 def load_config() -> Config:
-    """
-    Загружает настройки из config.json.
-    Если файла нет — создаёт его с настройками по умолчанию.
-    """
-    path = get_config_path()
+    if CONFIG_PATH.exists():
+        with CONFIG_PATH.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
 
-    if not path.exists():
-        cfg = Config()
-        # Пример значений по умолчанию (можешь потом поправить вручную)
-        cfg.work_apps = ["code.exe", "pycharm64.exe", "excel.exe"]
-        cfg.distracting_apps = ["chrome.exe", "discord.exe", "telegram.exe"]
-        cfg.__post_init__()
-
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(asdict(cfg), f, ensure_ascii=False, indent=4)
-
-        print(
-            f"[CONFIG] Создан {CONFIG_FILENAME} с настройками по умолчанию.\n"
-            f"Отредактируй его или используй интерфейс для изменения."
+        return Config(
+            poll_interval_seconds=raw.get("poll_interval_seconds", 1),
+            idle_threshold_seconds=raw.get("idle_threshold_seconds", 10),
+            idle_warning_minutes=raw.get("idle_warning_minutes", 10),
+            break_warning_minutes=raw.get("break_warning_minutes", 25),
+            notify_on_idle=raw.get("notify_on_idle", True),
+            notify_on_break=raw.get("notify_on_break", True),
+            work_apps=list(raw.get("work_apps", [])),
+            distracting_apps=list(raw.get("distracting_apps", [])),
+            db_path=raw.get("db_path", str(DB_PATH_DEFAULT)),
+            theme=raw.get("theme", "dark"),
         )
-        return cfg
 
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    default_cfg = Config()
-    default_dict = asdict(default_cfg)
-    default_dict.update(data)
-
-    cfg = Config(**default_dict)
+    # если конфиг ещё не создан — создаём с настройками по умолчанию
+    cfg = Config()
+    save_config(cfg)
     return cfg
 
 
 def save_config(cfg: Config) -> None:
-    """
-    Сохраняет настройки в config.json.
-    """
-    cfg.__post_init__()  # ещё раз нормализуем списки приложений
-    path = get_config_path()
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(asdict(cfg), f, ensure_ascii=False, indent=4)
-    print("[CONFIG] Настройки сохранены в config.json")
+    with CONFIG_PATH.open("w", encoding="utf-8") as f:
+        json.dump(asdict(cfg), f, ensure_ascii=False, indent=2)

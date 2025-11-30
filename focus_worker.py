@@ -14,11 +14,11 @@ from notifier import send_notification
 
 class FocusWorker(QThread):
     """
-    Поток, который занимается отслеживанием активности,
-    записью в БД и отправкой уведомлений.
+    Поток, который отслеживает активность,
+    пишет события в БД и управляет уведомлениями.
     """
 
-    status_updated = pyqtSignal(str)     # новая строка лога
+    status_updated = pyqtSignal(str)     # новые строки лога
     started_tracking = pyqtSignal()      # трекер стартовал
     stopped_tracking = pyqtSignal()      # трекер остановлен
 
@@ -28,7 +28,7 @@ class FocusWorker(QThread):
         self._stop_flag = False
 
     def stop(self):
-        """Запрашивает остановку потока."""
+        """Запрос остановки потока."""
         self._stop_flag = True
 
     def run(self):
@@ -39,21 +39,41 @@ class FocusWorker(QThread):
         activity_tracker = InputActivityTracker()
         activity_tracker.start()
 
-        # Непрерывная работа в рабочих приложениях (для напоминаний о перерыве)
-        continuous_work_seconds = 0
+        # --- Параметры уведомлений ---
+
+        # через сколько секунд бездействия/отвлечения напоминать
+        if self.config.idle_warning_minutes > 0:
+            idle_notify_seconds = self.config.idle_warning_minutes * 60
+        else:
+            # специальный режим: напоминать сразу после превышения порога ввода
+            idle_notify_seconds = self.config.idle_threshold_seconds
+
+        # порог "усталости" для напоминания о перерыве
+        fatigue_threshold = max(1.0, self.config.break_warning_minutes * 60)
+
+        # коэффициент восстановления: насколько быстрее отдых снимает усталость,
+        # чем работа её накапливает. 4 означает, что 10 минут отдыха компенсируют
+        # примерно 40 минут работы.
+        FATIGUE_RECOVERY_FACTOR = 4.0
+
+        # минимальный интервал между напоминаниями о перерыве (секунды),
+        # чтобы не спамить при полном игноре рекомендаций
+        MIN_BREAK_NOTIFY_INTERVAL_SECONDS = 60
+
+        # --- Состояние для алгоритма ---
+
+        # интегральная "усталость" от работы
+        fatigue_score: float = 0.0
+
+        # время непрерывного неблагоприятного состояния
+        # (idle ИЛИ активное отвлекающее приложение)
+        non_productive_seconds: float = 0.0
 
         last_idle_notification_time: Optional[datetime] = None
         last_break_notification_time: Optional[datetime] = None
 
         self.started_tracking.emit()
         self.status_updated.emit("Трекер запущен.")
-
-        # Порог для уведомления о бездействии:
-        # если idle_warning_minutes == 0, используем порог бездействия (idle_threshold_seconds)
-        if self.config.idle_warning_minutes > 0:
-            idle_notify_seconds = self.config.idle_warning_minutes * 60
-        else:
-            idle_notify_seconds = self.config.idle_threshold_seconds
 
         try:
             while not self._stop_flag:
@@ -74,7 +94,7 @@ class FocusWorker(QThread):
                 is_work_app = app_name_norm in self.config.work_apps
                 is_distracting_app = app_name_norm in self.config.distracting_apps
 
-                # --- Тип состояния (для понимания и логов) ---
+                # --- Определяем состояние для логики ---
                 if not user_active:
                     state = "idle"
                 elif is_work_app:
@@ -84,7 +104,7 @@ class FocusWorker(QThread):
                 else:
                     state = "other"
 
-                # --- Запись события в БД ---
+                # --- Записываем событие в БД ---
                 insert_event(
                     db_path=self.config.db_path,
                     timestamp_utc=now,
@@ -97,16 +117,34 @@ class FocusWorker(QThread):
                     inputs_since_last=inputs_since_last,
                 )
 
-                # --- Непрерывная работа (только когда активные input + рабочее окно) ---
-                if user_active and is_work_app:
-                    continuous_work_seconds += self.config.poll_interval_seconds
+                # --- Обновляем "усталость" (алгоритм перерывов) ---
+
+                dt = self.config.poll_interval_seconds
+
+                if state == "work":
+                    # Работа увеличивает усталость линейно во времени
+                    fatigue_score += dt
                 else:
-                    continuous_work_seconds = 0
+                    # Любое состояние, кроме "work", уменьшает усталость
+                    fatigue_score = max(
+                        0.0, fatigue_score - dt * FATIGUE_RECOVERY_FACTOR
+                    )
+
+                # --- Обновляем "непродуктивные" секунды (idle + отвлечения) ---
+
+                # ВАЖНО: здесь мы считаем неблагоприятным как отсутствие ввода,
+                # так и активную работу в отвлекающих приложениях.
+                if state in ("idle", "distract"):
+                    non_productive_seconds += dt
+                else:
+                    non_productive_seconds = 0.0
 
                 # --- Лог в интерфейс ---
                 log_line = (
                     f"state={state} "
                     f"idle={int(idle_seconds)}s "
+                    f"non_prod={int(non_productive_seconds)}s "
+                    f"fatigue={int(fatigue_score)}/{int(fatigue_threshold)} "
                     f"inputs={inputs_since_last} "
                     f"app={app_name} "
                     f"work={is_work_app} distract={is_distracting_app} "
@@ -114,45 +152,52 @@ class FocusWorker(QThread):
                 )
                 self.status_updated.emit(log_line)
 
-                # --- Уведомление о бездействии (завязано на idle_seconds) ---
-                if self.config.notify_on_idle and state == "idle":
-                    if idle_seconds >= idle_notify_seconds:
-                        need_notify = False
-                        if last_idle_notification_time is None:
-                            need_notify = True
-                        else:
-                            # чтобы не спамить — не чаще, чем раз в idle_notify_seconds
-                            if (now - last_idle_notification_time).total_seconds() >= idle_notify_seconds:
-                                need_notify = True
+                # --- Уведомление о бездействии/отвлечении ---
 
-                        if need_notify:
-                            send_notification(
-                                "Похоже, вы бездействуете",
-                                "Давно не было активности. Вы отвлеклись или пора завершить работу?",
-                            )
-                            last_idle_notification_time = now
+                if self.config.notify_on_idle and non_productive_seconds >= idle_notify_seconds:
+                    need_notify = False
+                    if last_idle_notification_time is None:
+                        need_notify = True
+                    else:
+                        # не чаще, чем раз в тот же интервал
+                        if (now - last_idle_notification_time).total_seconds() >= idle_notify_seconds:
+                            need_notify = True
+
+                    if need_notify:
+                        send_notification(
+                            "Похоже, вы отвлеклись или бездействуете",
+                            "Давно не было продуктивной активности. "
+                            "Вернитесь к рабочим задачам или завершите сессию.",
+                        )
+                        last_idle_notification_time = now
+                        # сбрасываем счётчик неблагоприятного состояния
+                        non_productive_seconds = 0.0
 
                 # --- Уведомление о необходимости перерыва ---
-                if self.config.notify_on_break and state == "work":
-                    if continuous_work_seconds >= self.config.break_warning_minutes * 60:
-                        need_notify = False
-                        if last_break_notification_time is None:
+
+                if self.config.notify_on_break and fatigue_score >= fatigue_threshold:
+                    need_notify = False
+                    if last_break_notification_time is None:
+                        need_notify = True
+                    else:
+                        if (now - last_break_notification_time).total_seconds() >= MIN_BREAK_NOTIFY_INTERVAL_SECONDS:
                             need_notify = True
-                        else:
-                            # перерывы напоминаем реже (например, раз в 10 минут)
-                            if (now - last_break_notification_time) >= timedelta(minutes=10):
-                                need_notify = True
 
-                        if need_notify:
-                            send_notification(
-                                "Пора сделать перерыв",
-                                "Вы долго работаете без перерыва. Встаньте, пройдитесь, отдохните пару минут.",
-                            )
-                            last_break_notification_time = now
-                            # можно сбросить счётчик, чтобы отсчитывать заново
-                            continuous_work_seconds = 0
+                    if need_notify:
+                        send_notification(
+                            "Пора сделать перерыв",
+                            "Вы долго работаете в рабочих приложениях. "
+                            "Сделайте небольшую паузу и отвлекитесь от экрана.",
+                        )
+                        last_break_notification_time = now
 
-                # --- Пауза до следующего тика ---
+                        # После уведомления частично "разгружаем" усталость,
+                        # чтобы следующая напоминалка не пришла мгновенно,
+                        # но при коротком перерыве она появится заметно раньше,
+                        # чем через полный интервал.
+                        fatigue_score = fatigue_threshold * 0.5
+
+                # --- Пауза между итерациями ---
                 self.sleep(self.config.poll_interval_seconds)
 
         finally:
