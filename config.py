@@ -5,12 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 import json
+import sys
 
-# путь к файлу конфигурации
-CONFIG_PATH = Path("config.json")
+# -------------------------------------------------
+# БАЗОВЫЙ КАТАЛОГ ДЛЯ CONFIG.JSON И БД
+# -------------------------------------------------
+# - при запуске из .exe (PyInstaller onefile) — каталог рядом с exe
+# - при запуске из исходников — папка, где лежит config.py
 
-# по умолчанию база лежит рядом с программой
-DB_PATH_DEFAULT = Path(__file__).with_name("focusmeter.db")
+if getattr(sys, "frozen", False):
+    # режим собранного exe
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    # обычный Python-скрипт
+    BASE_DIR = Path(__file__).resolve().parent
+
+CONFIG_PATH = BASE_DIR / "config.json"
+DB_PATH_DEFAULT = BASE_DIR / "focusmeter.db"
 
 
 @dataclass
@@ -32,7 +43,7 @@ class Config:
     # путь к БД
     db_path: str = str(DB_PATH_DEFAULT)
 
-    # тема интерфейса:
+    # тема интерфейса
     # "system" — системная
     # "light"  — светлая Fusion
     # "dark"   — тёмная Fusion

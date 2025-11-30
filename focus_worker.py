@@ -130,14 +130,22 @@ class FocusWorker(QThread):
                         0.0, fatigue_score - dt * FATIGUE_RECOVERY_FACTOR
                     )
 
-                # --- Обновляем "непродуктивные" секунды (idle + отвлечения) ---
+                    # --- Обновляем "непродуктивные" секунды (idle + отвлечения) ---
 
-                # ВАЖНО: здесь мы считаем неблагоприятным как отсутствие ввода,
-                # так и активную работу в отвлекающих приложениях.
-                if state in ("idle", "distract"):
-                    non_productive_seconds += dt
-                else:
-                    non_productive_seconds = 0.0
+                    # Логика:
+                    #  - для IDLE считаем «непродуктивное» время прямо от момента
+                    #    последнего ввода (idle_seconds), чтобы не было двойного ожидания
+                    #    (порог + ещё таймер).
+                    #  - для DISTRACT накапливаем время с момента, как пользователь
+                    #    ушёл в отвлекающее приложение.
+                    #  - для WORK / OTHER счётчик сбрасываем.
+                    if state == "idle":
+                        # idle_seconds уже считает время с последнего инпута
+                        non_productive_seconds = idle_seconds
+                    elif state == "distract":
+                        non_productive_seconds += dt
+                    else:
+                        non_productive_seconds = 0.0
 
                 # --- Лог в интерфейс ---
                 log_line = (
