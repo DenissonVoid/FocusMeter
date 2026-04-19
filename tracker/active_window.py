@@ -1,13 +1,13 @@
-# tracker/active_window.py
+from __future__ import annotations
 
-from typing import Tuple, Optional
 import platform
+from dataclasses import dataclass
+from typing import Optional
+
 import psutil
 
-# Определяем ОС
 _SYSTEM = platform.system()
 
-# Попробуем подключить WinAPI для Windows
 if _SYSTEM == "Windows":
     try:
         import win32gui
@@ -19,80 +19,175 @@ else:
     win32gui = None
     win32process = None
 
-# pygetwindow как запасной вариант (для других ОС)
 try:
     import pygetwindow as gw
 except ImportError:
     gw = None
 
 
-def _get_active_window_windows() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Реализация для Windows через WinAPI:
-    - берём HWND активного окна
-    - по HWND узнаём PID процесса
-    - по PID получаем имя процесса через psutil
-    """
+@dataclass(frozen=True)
+class WindowInfo:
+    process_name: str = ""
+    window_title: str = ""
+    pid: Optional[int] = None
+    exe_path: str = ""
+    hwnd: Optional[int] = None
+
+
+def _build_window_info_windows(hwnd: int) -> WindowInfo | None:
     if win32gui is None or win32process is None:
-        return None, None
+        return None
+
+    try:
+        if not win32gui.IsWindowVisible(hwnd):
+            return None
+        title = (win32gui.GetWindowText(hwnd) or "").strip()
+    except Exception:
+        return None
+
+    if not title:
+        return None
+
+    try:
+        _thread_id, pid = win32process.GetWindowThreadProcessId(hwnd)
+    except Exception:
+        pid = None
+
+    process_name = ""
+    exe_path = ""
+    if pid:
+        try:
+            process = psutil.Process(pid)
+            process_name = process.name() or ""
+            exe_path = process.exe() or ""
+        except Exception:
+            pass
+
+    return WindowInfo(
+        process_name=process_name,
+        window_title=title,
+        pid=pid,
+        exe_path=exe_path,
+        hwnd=hwnd,
+    )
+
+
+def _get_active_window_windows() -> WindowInfo:
+    if win32gui is None:
+        return WindowInfo()
 
     try:
         hwnd = win32gui.GetForegroundWindow()
     except Exception:
-        return None, None
+        hwnd = 0
 
     if not hwnd:
-        return None, None
+        return WindowInfo()
+
+    info = _build_window_info_windows(hwnd)
+    if info is not None:
+        return info
+    return WindowInfo(hwnd=hwnd)
+
+
+def _list_open_windows_windows(limit: int) -> list[WindowInfo]:
+    if win32gui is None:
+        return []
+
+    windows: list[WindowInfo] = []
+    active_hwnd = None
+    try:
+        active_hwnd = win32gui.GetForegroundWindow()
+    except Exception:
+        active_hwnd = None
+
+    def callback(hwnd: int, _extra) -> bool:
+        info = _build_window_info_windows(hwnd)
+        if info is not None:
+            windows.append(info)
+        return True
 
     try:
-        title = win32gui.GetWindowText(hwnd) or ""
+        win32gui.EnumWindows(callback, None)
     except Exception:
-        title = ""
+        return []
 
-    app_name = None
-    try:
-        _tid, pid = win32process.GetWindowThreadProcessId(hwnd)
-        proc = psutil.Process(pid)
-        app_name = proc.name()
-    except Exception:
-        pass
+    deduped: dict[tuple[str, str], WindowInfo] = {}
+    for info in windows:
+        key = (info.process_name.lower(), info.window_title.lower())
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = info
+            continue
+        if active_hwnd is not None and info.hwnd == active_hwnd:
+            deduped[key] = info
 
-    return app_name, title
+    result = list(deduped.values())
+    result.sort(
+        key=lambda item: (
+            0 if item.hwnd == active_hwnd else 1,
+            item.process_name.lower(),
+            item.window_title.lower(),
+        )
+    )
+    return result[:limit]
 
 
-def _get_active_window_fallback() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Запасной вариант (для не-Windows или если WinAPI недоступен).
-    Здесь мы в лучшем случае узнаём только заголовок окна.
-    """
+def _get_active_window_fallback() -> WindowInfo:
     if gw is None:
-        return None, None
+        return WindowInfo()
 
     try:
         win = gw.getActiveWindow()
     except Exception:
-        return None, None
+        return WindowInfo()
 
     if win is None:
-        return None, None
+        return WindowInfo()
 
-    title = getattr(win, "title", "") or ""
-    # Процесс определить надёжно не можем — вернём только заголовок
-    return None, title
+    return WindowInfo(window_title=(getattr(win, "title", "") or "").strip())
 
 
-def get_active_window() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Возвращает (app_name, window_title).
+def _list_open_windows_fallback(limit: int) -> list[WindowInfo]:
+    if gw is None:
+        return []
 
-    app_name — имя процесса (например, 'pycharm64.exe', 'chrome.exe')
-    window_title — заголовок окна
-    """
+    try:
+        titles = gw.getAllTitles()
+    except Exception:
+        return []
+
+    seen: set[str] = set()
+    result: list[WindowInfo] = []
+    for title in titles:
+        normalized = (title or "").strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(WindowInfo(window_title=normalized))
+
+    return result[:limit]
+
+
+def get_active_window_info() -> WindowInfo:
     if _SYSTEM == "Windows":
-        app, title = _get_active_window_windows()
-        # если получилось, используем WinAPI-результат
-        if app is not None or title:
-            return app, title
-
-    # иначе — fallback (другие ОС или если WinAPI не сработал)
+        info = _get_active_window_windows()
+        if info.process_name or info.window_title:
+            return info
     return _get_active_window_fallback()
+
+
+def list_open_windows(limit: int = 100) -> list[WindowInfo]:
+    if _SYSTEM == "Windows":
+        windows = _list_open_windows_windows(limit)
+        if windows:
+            return windows
+    return _list_open_windows_fallback(limit)
+
+
+def get_active_window() -> tuple[Optional[str], Optional[str]]:
+    info = get_active_window_info()
+    return info.process_name or None, info.window_title or None

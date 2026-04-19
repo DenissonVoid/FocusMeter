@@ -1,9 +1,30 @@
-# storage/db.py
+from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from datetime import datetime
+
+
+@dataclass
+class AppUsageRow:
+    app_name: str
+    last_window_title: str
+    active_seconds: float
+    work_active_seconds: float
+    distract_active_seconds: float
+    other_active_seconds: float
+    share_of_total: float
+    share_of_active: float
+
+    @property
+    def app_type(self) -> str:
+        if self.work_active_seconds > 0 and self.distract_active_seconds == 0:
+            return "Рабочее"
+        if self.distract_active_seconds > 0 and self.work_active_seconds == 0:
+            return "Отвлекающее"
+        if self.work_active_seconds == 0 and self.distract_active_seconds == 0:
+            return "Прочее"
+        return "Смешанное"
 
 
 @dataclass
@@ -16,21 +37,16 @@ class TimeStats:
     distract_active_seconds: float
     other_active_seconds: float
     idle_seconds: float
-    by_app: List[Dict[str, Any]]
+    by_app: list[AppUsageRow]
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    # timeout чуть побольше, чтобы реже ловить "database is locked"
     return sqlite3.connect(db_path, timeout=5.0)
 
 
-def init_db(db_path: str):
-    """
-    Создаёт таблицу events, если её ещё нет.
-    """
+def init_db(db_path: str) -> None:
     conn = _connect(db_path)
     cur = conn.cursor()
-
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS events (
@@ -46,7 +62,6 @@ def init_db(db_path: str):
         );
         """
     )
-
     conn.commit()
     conn.close()
 
@@ -61,13 +76,9 @@ def insert_event(
     user_active: bool,
     idle_seconds: float,
     inputs_since_last: int,
-):
-    """
-    Записывает одно событие в таблицу events.
-    """
+) -> None:
     conn = _connect(db_path)
     cur = conn.cursor()
-
     cur.execute(
         """
         INSERT INTO events (
@@ -93,7 +104,6 @@ def insert_event(
             int(inputs_since_last),
         ),
     )
-
     conn.commit()
     conn.close()
 
@@ -104,10 +114,7 @@ def get_time_stats(
     end_utc: datetime,
     sample_interval_seconds: float,
 ) -> TimeStats:
-    """
-    Возвращает агрегированную статистику по интервалу [start_utc; end_utc).
-    Предполагаем, что каждая запись ≈ sample_interval_seconds секунд.
-    """
+    init_db(db_path)
 
     start_iso = start_utc.isoformat()
     end_iso = end_utc.isoformat()
@@ -115,7 +122,6 @@ def get_time_stats(
     conn = _connect(db_path)
     cur = conn.cursor()
 
-    # --- агрегаты по всем событиям ---
     cur.execute(
         """
         SELECT
@@ -129,54 +135,65 @@ def get_time_stats(
         """,
         (start_iso, end_iso),
     )
-    row = cur.fetchone()
+    row = cur.fetchone() or (0, 0, 0, 0, 0)
 
-    if row is None:
-        total_rows = active_rows = work_rows = distract_rows = idle_rows = 0
-    else:
-        total_rows = row[0] or 0
-        active_rows = row[1] or 0
-        work_rows = row[2] or 0
-        distract_rows = row[3] or 0
-        idle_rows = row[4] or 0
+    total_rows = row[0] or 0
+    active_rows = row[1] or 0
+    work_rows = row[2] or 0
+    distract_rows = row[3] or 0
+    idle_rows = row[4] or 0
 
     total_seconds = total_rows * sample_interval_seconds
     active_seconds = active_rows * sample_interval_seconds
     work_active_seconds = work_rows * sample_interval_seconds
     distract_active_seconds = distract_rows * sample_interval_seconds
     idle_seconds = idle_rows * sample_interval_seconds
-    other_active_seconds = max(active_seconds - work_active_seconds - distract_active_seconds, 0.0)
+    other_active_seconds = max(
+        active_seconds - work_active_seconds - distract_active_seconds,
+        0.0,
+    )
 
-    # --- топ приложений по активному времени ---
     cur.execute(
         """
         SELECT
             app_name,
+            COALESCE(MAX(NULLIF(window_title, '')), '') AS last_window_title,
             SUM(CASE WHEN user_active = 1 THEN 1 ELSE 0 END) AS active_rows,
             SUM(CASE WHEN user_active = 1 AND is_work_app = 1 THEN 1 ELSE 0 END) AS work_rows,
             SUM(CASE WHEN user_active = 1 AND is_distracting_app = 1 THEN 1 ELSE 0 END) AS distract_rows
         FROM events
         WHERE timestamp_utc >= ? AND timestamp_utc < ?
         GROUP BY app_name
-        HAVING active_rows > 0
-        ORDER BY active_rows DESC
-        LIMIT 10;
+        HAVING SUM(CASE WHEN user_active = 1 THEN 1 ELSE 0 END) > 0
+        ORDER BY active_rows DESC, app_name ASC;
         """,
         (start_iso, end_iso),
     )
 
-    by_app: List[Dict[str, Any]] = []
-    for app_name, active_r, work_r, distract_r in cur.fetchall():
-        active_r = active_r or 0
-        work_r = work_r or 0
-        distract_r = distract_r or 0
+    by_app: list[AppUsageRow] = []
+    for app_name, last_window_title, active_rows, work_rows, distract_rows in cur.fetchall():
+        active_rows = active_rows or 0
+        work_rows = work_rows or 0
+        distract_rows = distract_rows or 0
+
+        app_active_seconds = active_rows * sample_interval_seconds
+        app_work_seconds = work_rows * sample_interval_seconds
+        app_distract_seconds = distract_rows * sample_interval_seconds
+        app_other_seconds = max(
+            app_active_seconds - app_work_seconds - app_distract_seconds,
+            0.0,
+        )
         by_app.append(
-            {
-                "app_name": app_name,
-                "active_seconds": active_r * sample_interval_seconds,
-                "work_active_seconds": work_r * sample_interval_seconds,
-                "distract_active_seconds": distract_r * sample_interval_seconds,
-            }
+            AppUsageRow(
+                app_name=app_name or "",
+                last_window_title=last_window_title or "",
+                active_seconds=app_active_seconds,
+                work_active_seconds=app_work_seconds,
+                distract_active_seconds=app_distract_seconds,
+                other_active_seconds=app_other_seconds,
+                share_of_total=(app_active_seconds / total_seconds) if total_seconds else 0.0,
+                share_of_active=(app_active_seconds / active_seconds) if active_seconds else 0.0,
+            )
         )
 
     conn.close()

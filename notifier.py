@@ -1,11 +1,13 @@
 # notifier.py
 
 from datetime import datetime
+from typing import Any, cast
 
 try:
     from plyer import notification
     PLYER_AVAILABLE = True
 except ImportError:
+    notification = None
     PLYER_AVAILABLE = False
     print("[NOTIFIER] plyer не установлен, буду только печатать уведомления в консоль.")
 
@@ -17,11 +19,12 @@ def send_notification(title: str, message: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] NOTIFY: {title} — {message}")
 
-    if not PLYER_AVAILABLE:
+    notifier_backend = notification
+    if not PLYER_AVAILABLE or notifier_backend is None:
         return
 
     try:
-        notification.notify(
+        cast(Any, notifier_backend).notify(
             title=title,
             message=message,
             app_name="FocusMeter",
