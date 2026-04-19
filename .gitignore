@@ -21,3 +21,6 @@ dist/
 # Runtime data
 focusmeter.db
 config.json
+app_rules.json
+
+.DS_Store

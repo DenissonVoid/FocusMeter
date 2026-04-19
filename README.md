@@ -8,7 +8,11 @@ FocusMeter помогает отслеживать рабочее время, о
 
 **Текущий релиз: `v0.3.0`**
 
-Скачать последнюю Windows-сборку можно в [Releases](https://github.com/DenissonVoid/FocusMeter/releases/latest).
+Скачать актуальные сборки можно в [Releases](https://github.com/DenissonVoid/FocusMeter/releases/latest):
+
+- `FocusMeter.exe` — Windows
+- `FocusMeter-macOS-arm64.dmg` — macOS (рекомендуется)
+- `FocusMeter-macOS-arm64.zip` — macOS (альтернативный архив с `.app`)
 
 ## Что нового в `v0.3.0`
 
@@ -57,10 +61,22 @@ FocusMeter отслеживает:
 - `focusmeter.db` — база статистики;
 - `app_rules.json` — правила приложений.
 
+### macOS (релиз `.dmg` / `.zip`)
+
+В релизе доступны два варианта:
+
+- `FocusMeter-macOS-arm64.dmg` — открыть DMG, перетащить `FocusMeter.app` в `Applications`
+- `FocusMeter-macOS-arm64.zip` — распаковать архив и переместить `FocusMeter.app` в `Applications`
+
+При первом запуске macOS может показать предупреждение безопасности:
+
+1. `System Settings -> Privacy & Security`
+2. внизу блока Security нажмите `Open Anyway` для FocusMeter (если появится)
+
 ### macOS (запуск из исходников)
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
@@ -73,11 +89,13 @@ python main_gui.py
 python main.py --cli
 ```
 
-Для корректной работы трекинга на macOS выдайте Python-приложению права:
+Для корректной работы трекинга на macOS могут понадобиться права:
 
-- `System Settings -> Privacy & Security -> Accessibility`
-- `System Settings -> Privacy & Security -> Input Monitoring`
-- при необходимости для заголовков окон: `Screen Recording`
+- `System Settings -> Privacy & Security -> Accessibility` (рекомендуется)
+- `System Settings -> Privacy & Security -> Screen Recording` (если нужны заголовки окон)
+- `System Settings -> Privacy & Security -> Input Monitoring` (может понадобиться на отдельных конфигурациях)
+
+Для `.app` из релиза эти же права нужно выдать самому приложению FocusMeter.
 
 ## Правила приложений
 
@@ -96,20 +114,13 @@ FocusMeter не записывает текст с клавиатуры и не 
 - заголовок активного окна;
 - локальная статистика в `focusmeter.db`.
 
-## Запуск из исходников
-
-```bash
-pip install -r requirements.txt
-python main_gui.py
-```
-
 ## Стек
 
 - Python
 - PyQt5
 - SQLite
 - psutil
-- pynput (Windows/Linux)
+- pynput (Windows/Linux, на macOS не используется)
 - pyobjc (macOS)
 
 ## Статус проекта

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from PyQt5.QtCore import QTimer, Qt, pyqtSignal
+import platform
+
+from PyQt5.QtCore import QSize, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog,
     QFrame,
@@ -18,6 +20,8 @@ from window_chrome import (
     prepare_frameless_window,
     schedule_window_layout_sync,
 )
+
+_IS_MACOS = platform.system() == "Darwin"
 
 
 def format_duration(seconds: float) -> str:
@@ -47,7 +51,11 @@ class FocusWidget(QDialog):
         self.setWindowTitle("FocusMeter Widget")
         self.setMinimumSize(320, 170)
 
-        prepare_frameless_window(self, use_tool=True, always_on_top=True)
+        prepare_frameless_window(
+            self,
+            use_tool=self._widget_use_tool_flag(),
+            always_on_top=True,
+        )
         self._build_ui()
         self.apply_settings(always_on_top=True, compact_mode=False)
         self.show_idle_state()
@@ -158,6 +166,34 @@ class FocusWidget(QDialog):
 
         self.menu_button.setMenu(menu)
 
+    def _target_size_for_mode(self, compact_mode: bool) -> QSize:
+        if compact_mode:
+            base_size = QSize(324, 176)
+        else:
+            base_size = QSize(388, 268)
+
+        if not _IS_MACOS:
+            return base_size
+
+        # На macOS системные метрики шрифтов и отступов больше, чем на Windows:
+        # фиксируем чуть более высокий/широкий размер только для Darwin,
+        # чтобы не ломать верстку Windows, где текущие значения уже стабильны.
+        mac_floor = QSize(
+            base_size.width() + 24,
+            base_size.height() + (26 if compact_mode else 44),
+        )
+
+        self.layout().activate()
+        hinted = self.sizeHint()
+        return hinted.expandedTo(mac_floor)
+
+    @staticmethod
+    def _widget_use_tool_flag() -> bool:
+        # На macOS Qt.Tool (NSPanel) часто скрывается при деактивации приложения.
+        # Для виджета используем обычное окно, чтобы оно не исчезало при переключении.
+        # На Windows/других ОС сохраняем прежнее поведение.
+        return not _IS_MACOS
+
     def apply_settings(self, always_on_top: bool, compact_mode: bool) -> None:
         self._always_on_top = always_on_top
         self._compact_mode = compact_mode
@@ -174,7 +210,11 @@ class FocusWidget(QDialog):
         self.topmost_action.setChecked(always_on_top)
         self.topmost_action.blockSignals(False)
 
-        prepare_frameless_window(self, use_tool=True, always_on_top=always_on_top)
+        prepare_frameless_window(
+            self,
+            use_tool=self._widget_use_tool_flag(),
+            always_on_top=always_on_top,
+        )
         self.break_label.setVisible(not compact_mode)
         self.idle_label.setVisible(not compact_mode)
         self.meta_label.setVisible(True)
@@ -187,12 +227,12 @@ class FocusWidget(QDialog):
         if compact_mode:
             self.meta_label.setVisible(False)
             self.warning_label.setVisible(False)
-            self.setFixedSize(324, 176)
         else:
             self.meta_label.setVisible(True)
-            self.setFixedSize(388, 268)
 
-        self.resize(self.minimumSize())
+        target_size = self._target_size_for_mode(compact_mode)
+        self.setFixedSize(target_size)
+        self.resize(target_size)
 
         if was_visible:
             self.show()
