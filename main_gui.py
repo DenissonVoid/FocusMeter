@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import platform
 import sys
 from datetime import datetime, time as dt_time, timedelta
 from typing import cast
@@ -48,12 +49,18 @@ from tracker.active_window import WindowInfo, list_open_windows
 from window_chrome import build_window_shell, prepare_frameless_window
 from window_chrome import schedule_window_layout_sync
 
+if platform.system() == "Darwin":
+    _UI_FONT_RULE = "font-size: 10pt;"
+elif platform.system() == "Windows":
+    _UI_FONT_RULE = 'font-family: "Segoe UI";\n    font-size: 10pt;'
+else:
+    _UI_FONT_RULE = 'font-family: "Noto Sans", "DejaVu Sans", "Arial";\n    font-size: 10pt;'
+
 
 LIGHT_STYLE_SHEET = """
 QWidget {
-    font-family: "Segoe UI";
+    __UI_FONT_RULE__
     color: #1F1F21;
-    font-size: 10pt;
 }
 QMainWindow, QDialog {
     background: transparent;
@@ -280,14 +287,13 @@ QScrollArea {
     border: none;
     background: transparent;
 }
-"""
+""".replace("__UI_FONT_RULE__", _UI_FONT_RULE)
 
 
 DARK_STYLE_SHEET = """
 QWidget {
-    font-family: "Segoe UI";
+    __UI_FONT_RULE__
     color: #F0F0F2;
-    font-size: 10pt;
 }
 QMainWindow, QDialog {
     background: transparent;
@@ -515,7 +521,7 @@ QScrollArea {
     border: none;
     background: transparent;
 }
-"""
+""".replace("__UI_FONT_RULE__", _UI_FONT_RULE)
 
 
 class KpiCard(QFrame):
