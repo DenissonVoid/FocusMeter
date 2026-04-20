@@ -1,6 +1,10 @@
-pynput
+pynput; platform_system != "Darwin"
 psutil
 pygetwindow
 plyer
 PyQt5
-pywin32
+pywin32; platform_system == "Windows"
+
+pyobjc-core; platform_system == "Darwin"
+pyobjc-framework-Cocoa; platform_system == "Darwin"
+pyobjc-framework-Quartz; platform_system == "Darwin"

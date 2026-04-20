@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import platform
 import sys
 from datetime import datetime, time as dt_time, timedelta
+from pathlib import Path
 from typing import cast
 
 from PyQt5.QtCore import QFileInfo, Qt, QTimer
-from PyQt5.QtGui import QColor, QIcon, QPalette
+from PyQt5.QtGui import QColor, QIcon, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -48,12 +50,27 @@ from tracker.active_window import WindowInfo, list_open_windows
 from window_chrome import build_window_shell, prepare_frameless_window
 from window_chrome import schedule_window_layout_sync
 
+if platform.system() == "Darwin":
+    _UI_FONT_RULE = "font-size: 10pt;"
+elif platform.system() == "Windows":
+    _UI_FONT_RULE = 'font-family: "Segoe UI";\n    font-size: 10pt;'
+else:
+    _UI_FONT_RULE = 'font-family: "Noto Sans", "DejaVu Sans", "Arial";\n    font-size: 10pt;'
+
+_IS_MACOS = platform.system() == "Darwin"
+if _IS_MACOS:
+    try:
+        from AppKit import NSWorkspace
+    except ImportError:
+        NSWorkspace = None
+else:
+    NSWorkspace = None
+
 
 LIGHT_STYLE_SHEET = """
 QWidget {
-    font-family: "Segoe UI";
+    __UI_FONT_RULE__
     color: #1F1F21;
-    font-size: 10pt;
 }
 QMainWindow, QDialog {
     background: transparent;
@@ -280,14 +297,13 @@ QScrollArea {
     border: none;
     background: transparent;
 }
-"""
+""".replace("__UI_FONT_RULE__", _UI_FONT_RULE)
 
 
 DARK_STYLE_SHEET = """
 QWidget {
-    font-family: "Segoe UI";
+    __UI_FONT_RULE__
     color: #F0F0F2;
-    font-size: 10pt;
 }
 QMainWindow, QDialog {
     background: transparent;
@@ -515,7 +531,7 @@ QScrollArea {
     border: none;
     background: transparent;
 }
-"""
+""".replace("__UI_FONT_RULE__", _UI_FONT_RULE)
 
 
 class KpiCard(QFrame):
@@ -1606,6 +1622,7 @@ class MainWindow(QMainWindow):
     def _refresh_app_catalog(self) -> None:
         self.rules_repo.reload()
         self._open_windows = list_open_windows(limit=200)
+        self._icon_cache.clear()
         self._populate_app_table()
         self._update_rule_conflicts()
 
@@ -1686,16 +1703,131 @@ class MainWindow(QMainWindow):
             ]
         return rows
 
-    def _icon_for_path(self, exe_path: str) -> QIcon:
+    def _icon_for_path(self, exe_path: str, process_name: str = "") -> QIcon:
         path = (exe_path or "").strip()
-        if not path:
-            return QIcon()
-        icon = self._icon_cache.get(path)
-        if icon is None:
+        process_name = (process_name or "").strip()
+
+        cache_key = f"{platform.system()}::{path}::{process_name.lower()}"
+        cached_icon = self._icon_cache.get(cache_key)
+        if cached_icon is not None:
+            return cached_icon
+
+        if _IS_MACOS:
+            icon = self._icon_for_macos(path, process_name)
+        else:
             provider = QFileIconProvider()
-            icon = provider.icon(QFileInfo(path))
-            self._icon_cache[path] = icon
+            if path:
+                icon = provider.icon(QFileInfo(path))
+            else:
+                icon = QIcon()
+
+        self._icon_cache[cache_key] = icon
         return icon
+
+    @staticmethod
+    def _macos_icon_source(exe_path: str) -> str:
+        """
+        На macOS иконка приложения обычно лежит у .app bundle, а не у бинарника
+        внутри Contents/MacOS. Возвращаем путь к bundle, если можем его вычислить.
+        """
+        candidate = (exe_path or "").strip()
+        if not candidate:
+            return candidate
+
+        path = Path(candidate)
+        parts = path.parts
+        for index, part in enumerate(parts):
+            if part.lower().endswith(".app"):
+                bundle_path = Path(*parts[: index + 1])
+                return str(bundle_path)
+            if part.lower().endswith(".app.bundle"):
+                bundle_like_path = Path(*parts[: index + 1])
+                return str(bundle_like_path)
+
+        return candidate
+
+    @staticmethod
+    def _macos_app_path_by_name(process_name: str) -> str:
+        if not process_name or NSWorkspace is None:
+            return ""
+
+        workspace = NSWorkspace.sharedWorkspace()
+        candidates = [
+            process_name,
+            process_name.title(),
+            process_name.replace("_", " "),
+            process_name.replace("_", " ").title(),
+        ]
+        for candidate in candidates:
+            try:
+                resolved = workspace.fullPathForApplication_(candidate)
+            except Exception:
+                resolved = None
+            if resolved:
+                return str(resolved)
+        return ""
+
+    @staticmethod
+    def _icon_from_nsworkspace(path: str) -> QIcon:
+        if not path or NSWorkspace is None:
+            return QIcon()
+
+        try:
+            ns_icon = NSWorkspace.sharedWorkspace().iconForFile_(path)
+        except Exception:
+            ns_icon = None
+        if ns_icon is None:
+            return QIcon()
+
+        try:
+            tiff_data = ns_icon.TIFFRepresentation()
+        except Exception:
+            tiff_data = None
+        if not tiff_data:
+            return QIcon()
+
+        pixmap = QPixmap()
+        try:
+            raw = bytes(tiff_data)
+        except Exception:
+            raw = b""
+        if not raw:
+            return QIcon()
+        if not pixmap.loadFromData(raw):
+            return QIcon()
+        return QIcon(pixmap)
+
+    def _icon_for_macos(self, exe_path: str, process_name: str) -> QIcon:
+        provider = QFileIconProvider()
+        tried: set[str] = set()
+
+        def icon_for(candidate: str) -> QIcon:
+            candidate = (candidate or "").strip()
+            if not candidate or candidate in tried:
+                return QIcon()
+            tried.add(candidate)
+
+            icon = self._icon_from_nsworkspace(candidate)
+            if not icon.isNull():
+                return icon
+
+            return provider.icon(QFileInfo(candidate))
+
+        bundle_candidate = self._macos_icon_source(exe_path)
+        icon = icon_for(bundle_candidate)
+        if not icon.isNull():
+            return icon
+
+        icon = icon_for(exe_path)
+        if not icon.isNull():
+            return icon
+
+        app_path = self._macos_app_path_by_name(process_name)
+        icon = icon_for(app_path)
+        if not icon.isNull():
+            return icon
+
+        return QIcon()
 
     def _populate_app_table(self) -> None:
         previous = self._selected_row_payload()
@@ -1714,7 +1846,12 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(
                 f"{favorite_prefix}{row['process_name']} · {rule_label}\n{title}"
             )
-            item.setIcon(self._icon_for_path(str(row["exe_path"])))
+            item.setIcon(
+                self._icon_for_path(
+                    str(row["exe_path"]),
+                    str(row["process_name"]),
+                )
+            )
             item.setData(Qt.ItemDataRole.UserRole, row)
             item.setToolTip(f"{title}\n{summary}")
             self.app_list.addItem(item)
